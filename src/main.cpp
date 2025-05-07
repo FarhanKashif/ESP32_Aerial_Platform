@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <ctime>
 #include <cstdlib>
+#include <mbedtls/aes.h>
 
 // Default Gyro LPF 0x00
 // Default Accel LPF 0x00
@@ -31,17 +32,24 @@
 #define INTERVAL_MS_PRINT 10  // Time in ms for printing data on Serial Monitor
 
 /* PACKET STRUCTURE */
-typedef struct message {
-  float pitch = 0; // Pitch Value
-  float roll = 0; // Roll Value
-  float yaw = 0; // Yaw Value
-  int16_t magX = 0; // Magnetometer X Value
-  int16_t magY = 0; // Magnetometer Y Value
-  int16_t magZ = 0; // Magnetometer Z Value
-  int packetID; // Packet ID
-} message_t;
+// Ensure proper packing to avoid compiler padding
+#pragma pack(push, 1)
+typedef struct {
+  float pitch;    // 4 bytes
+  float roll;     // 4 bytes
+  float yaw;      // 4 bytes
+  int16_t magX;   // 2 bytes
+  int16_t magY;   // 2 bytes
+  int16_t magZ;   // 2 bytes
+  int packetID;   // 4 bytes
+} message_t;      // Total: 22 bytes
+#pragma pack(pop)
 
 /* Function Decleration */
+bool Encrypt(message_t* data, const char* key, uint8_t *packet);
+bool Decrypt(uint8_t* packet, const char* key, message_t* data);
+void printHex(uint8_t*, size_t);
+void sample_temp();
 void readQMC5883L(int16_t*, int16_t*, int16_t*);
 float Calculate_PID(unsigned long);
 void setGyroLPF(uint8_t);
@@ -56,6 +64,7 @@ void Calculate_Roll();
 void Calculate_Pitch();
 bool readSample();
 bool SendDataToGroundStation(message_t* data);
+bool SendDataToGroundStation(uint8_t* data);
 
 MPU6500 IMU;  // Change to the name of any supported IMU!
 
@@ -96,7 +105,98 @@ float Kp = 6.0 , Ki = 0.5, Kd = 0.1;
 float error = 0, prevError = 0, derivative = 0, integral = 0;
 float deltaTime = 0;
 
+// Key
+const char aes_key[] = "!@#$%^&*()!@#$%^"; // 16 bytes key
+
 /* FUNCTION DEFINITION */
+void sample_temp() {
+  const char aes_key[] = "!@#$%^&*()!@#$%^"; // 16 bytes key
+  message_t msg;
+  msg.pitch = 1.1;
+  msg.roll = 2.2;
+  msg.yaw = 3.3;
+  msg.magX = 4;
+  msg.magY = 5;
+  msg.magZ = 6;
+  msg.packetID = 100; // Random Packet ID
+  
+  // Buffer must be large enough for padded data (Multiple of 16 bytes)
+  // AES block size is 16 bytes, so we need to pad to the next multiple of 16 
+  uint8_t packet[32];
+  
+  Serial.println("Original Data:");
+  Serial.print("Roll: "); Serial.println(msg.roll);
+  Serial.print("Yaw: "); Serial.println(msg.yaw);
+  Serial.print("Pitch: "); Serial.println(msg.pitch);
+  Serial.print("MagX: "); Serial.println(msg.magX);
+  Serial.print("MagY: "); Serial.println(msg.magY);
+  Serial.print("MagZ: "); Serial.println(msg.magZ);
+  Serial.print("PacketID: "); Serial.println(msg.packetID);
+  
+  Encrypt(&msg, aes_key, packet);
+  
+  Serial.print("Encrypted data (hex): ");
+  printHex(packet, 32);
+  
+  message_t decryptedData;
+  Decrypt(packet, aes_key, &decryptedData);
+  
+  Serial.println("Decrypted Data:");
+  Serial.print("Roll: "); Serial.println(decryptedData.roll);
+  Serial.print("Yaw: "); Serial.println(decryptedData.yaw);
+  Serial.print("Pitch: "); Serial.println(decryptedData.pitch);
+  Serial.print("MagX: "); Serial.println(decryptedData.magX);
+  Serial.print("MagY: "); Serial.println(decryptedData.magY);
+  Serial.print("MagZ: "); Serial.println(decryptedData.magZ);
+  Serial.print("PacketID: "); Serial.println(decryptedData.packetID);
+  Serial.println("------------------");
+
+  delay(1000); // Delay for readability
+}
+// Function to encrypt data using AES
+// Use CBC mode for better security (requires IV)
+bool Encrypt(message_t* data, const char* key, uint8_t* packet) {
+  mbedtls_aes_context aes;
+  uint8_t iv[16] = {0}; // For testing - use random IV in production!
+  
+  // Pad the message to 32 bytes (next multiple of 16)
+  uint8_t padded[32];
+  memset(padded, 0, 32);
+  memcpy(padded, data, sizeof(message_t));
+  
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)key, 128);
+  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 32, iv, padded, packet);
+  mbedtls_aes_free(&aes);
+
+  return true;
+}
+
+bool Decrypt(uint8_t* packet, const char* key, message_t* data) {
+  mbedtls_aes_context aes;
+  uint8_t iv[16] = {0}; // Must match encryption IV
+  
+  uint8_t decrypted[32];
+  
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_dec(&aes, (const unsigned char*)key, 128);
+  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 32, iv, packet, decrypted);
+  mbedtls_aes_free(&aes);
+  
+  memcpy(data, decrypted, sizeof(message_t));
+  return true;
+}
+
+void printHex(uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+
 
 // Calculate PID
 float Calculate_PID(unsigned long sampleMicros) {
@@ -229,8 +329,25 @@ void readQMC5883L(int16_t* magX, int16_t* magY, int16_t* magZ) {
   }
 }
 
-// Function to send data to ground station via RF
+bool SendDataToGroundStation(uint8_t* data) {
+  const uint8_t START_MARKER[2] = {0xAA, 0x55};
 
+  const size_t totalSize = sizeof(START_MARKER) + sizeof(data);
+  if(Serial2.availableForWrite() < totalSize) {
+    Serial.println("HC-12 not ready for transmission.");
+    return false;
+  }
+
+  // 1. Send start marker
+  Serial2.write(START_MARKER, sizeof(START_MARKER));
+
+  // 2. Send data
+  Serial2.write(data, sizeof(data)); // Send the data
+
+  return true;
+}
+
+// Function to send data to ground station via RF
 bool SendDataToGroundStation(message_t* data) {
   const uint8_t START_MARKER[2] = { 0xAA, 0x55 };  // Start of packet marker
 
@@ -308,6 +425,10 @@ bool readSample() {
   packet.magZ = magZ;
   packet.packetID = rand() % 16777216; // Random Packet ID
 
+  // Encrypt data before sending
+  uint8_t encryptedPacket[32];
+  Encrypt(&packet, aes_key, encryptedPacket);
+  
   bool Sent = SendDataToGroundStation(&packet); // Send data to ground station 
 
   if(Sent) {
@@ -417,9 +538,9 @@ void setup() {
 
 void loop() {
 
-  readSample();
-
-  delay(100);
+  //readSample();
+  sample_temp();
+  //delay(100);
 
   // if (HC12.available()) {
   //   Serial.write(HC12.read());
