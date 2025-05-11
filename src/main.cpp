@@ -5,15 +5,22 @@
 #include <ctime>
 #include <cstdlib>
 #include <mbedtls/aes.h>
+#include <SX127XLT.h>
 
 // Default Gyro LPF 0x00
 // Default Accel LPF 0x00
 
 // Current Gyro LPF 0x02
 // Current Accel LPF 0x04
+ 
+/* SX1278 Instance */
+SX127XLT LT;
 
 // Baurdrate
 #define BAUD_RATE 9600
+
+// Define Device
+#define LORA_DEVICE DEVICE_SX1278
 
 #define HC12_RX 16  // UART2 RX pin
 #define HC12_TX 17  // UART2 TX pin
@@ -32,8 +39,7 @@
 #define INTERVAL_MS_PRINT 10  // Time in ms for printing data on Serial Monitor
 
 /* PACKET STRUCTURE */
-// Ensure proper packing to avoid compiler padding
-#pragma pack(push, 1)
+/* Compiler uses padding to make the structure a multiple of 4 (Total Size: 24 Bytes) */
 typedef struct {
   float pitch;    // 4 bytes
   float roll;     // 4 bytes
@@ -42,12 +48,12 @@ typedef struct {
   int16_t magY;   // 2 bytes
   int16_t magZ;   // 2 bytes
   int packetID;   // 4 bytes
-} message_t;      // Total: 22 bytes
-#pragma pack(pop)
+} message_t;      // Total: 22 + 2 bytes
+
 
 /* Function Decleration */
-bool Encrypt(message_t* data, const char* key, uint8_t *packet);
-bool Decrypt(uint8_t* packet, const char* key, message_t* data);
+bool Encrypt(message_t*, const char*, uint8_t *);
+bool Decrypt(uint8_t*, const char* , message_t*);
 void printHex(uint8_t*, size_t);
 void sample_temp();
 void readQMC5883L(int16_t*, int16_t*, int16_t*);
@@ -63,8 +69,8 @@ void calculateGyroscopeAngles(unsigned long);
 void Calculate_Roll();
 void Calculate_Pitch();
 bool readSample();
-bool SendDataToGroundStation(message_t* data);
-bool SendDataToGroundStation(uint8_t* data);
+bool SendDataToGroundStation(message_t*);
+bool SendDataToGroundStation(uint8_t*);
 
 MPU6500 IMU;  // Change to the name of any supported IMU!
 
@@ -124,6 +130,14 @@ void sample_temp() {
   // AES block size is 16 bytes, so we need to pad to the next multiple of 16 
   uint8_t packet[32];
   
+  Serial.print("Packet Size: ");
+  Serial.print("Msg Size (without Addition): ");
+  Serial.println(sizeof(message_t));   // 24 bytes padding included
+
+  // Check available bytes for writing
+  Serial.print("Available Bytes: ");
+  Serial.println(Serial2.availableForWrite()); // 128 Bytes
+
   Serial.println("Original Data:");
   Serial.print("Roll: "); Serial.println(msg.roll);
   Serial.print("Yaw: "); Serial.println(msg.yaw);
@@ -332,10 +346,11 @@ void readQMC5883L(int16_t* magX, int16_t* magY, int16_t* magZ) {
 bool SendDataToGroundStation(uint8_t* data) {
   const uint8_t START_MARKER[2] = {0xAA, 0x55};
 
-  const size_t totalSize = sizeof(START_MARKER) + sizeof(data);
-  if(Serial2.availableForWrite() < totalSize) {
+  const size_t totalSize = sizeof(START_MARKER) + sizeof(data); // 2 + 32 = 34 bytes
+
+  // Wait for buffer to be available
+  while(Serial2.availableForWrite() < totalSize) {
     Serial.println("HC-12 not ready for transmission.");
-    return false;
   }
 
   // 1. Send start marker
@@ -429,7 +444,8 @@ bool readSample() {
   uint8_t encryptedPacket[32];
   Encrypt(&packet, aes_key, encryptedPacket);
   
-  bool Sent = SendDataToGroundStation(&packet); // Send data to ground station 
+  // Send data to ground station 
+  bool Sent = SendDataToGroundStation(encryptedPacket); 
 
   if(Sent) {
     Serial.println("Data sent successfully!");
@@ -444,13 +460,16 @@ bool readSample() {
   // Serial.print(Correction);clc
   // Serial.println();
 
+  /*
   Serial.print("Yaw: ");
   Serial.print(yaw);
   Serial.print("\t Pitch: ");
   Serial.print(pitch);
   Serial.print("\t Roll: ");
   Serial.println(roll);
-  
+  */
+
+  printHex(encryptedPacket, sizeof(encryptedPacket)); // Print encrypted data in hex format
   return 0;
 }
 
@@ -538,9 +557,9 @@ void setup() {
 
 void loop() {
 
-  //readSample();
-  sample_temp();
-  //delay(100);
+  readSample();
+  //sample_temp();
+  delay(100);
 
   // if (HC12.available()) {
   //   Serial.write(HC12.read());
