@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <mbedtls/aes.h>
 #include <SX127XLT.h>
-#include <SX127XLT_Definitions.h>
+#include <SPI.h>
+#include <common/mavlink.h>
+//#include <SX127XLT_Definitions.h>
 
 /* SX1278 CONFIG SELECTIONS */
 #define NSS     5
@@ -21,7 +23,9 @@
 #define HEADERMODE                0x00 // Explicit Header Modes
 #define PA_OUTPUT_PA_BOOST_PIN    5
 #define RAMP_TIME                 0x02
-#define TX_POWER                  20
+#define TX_POWER                  14
+// Default Sync word 0x12 (Can be changed) (Transmitter and Receiver must have same sync word)
+#define LORA_SYNCWORD            LORA_MAC_PRIVATE_SYNCWORD // Private LoRa sync word
 
 // Default Gyro LPF 0x00
 // Default Accel LPF 0x00
@@ -87,8 +91,10 @@ void Calculate_Pitch();
 bool readSample();
 bool SendDataToGroundStation(message_t*);
 bool SendDataToGroundStation(uint8_t*);
+bool SendDataToGroundStation_LoRa(uint8_t*, size_t);
+void sendTelemetryMavlink();
 
-MPU6500 IMU;  // Change to the name of any supported IMU!
+MPU6500 IMU;  
 
 calData calib = { 0 };  // Calibration data
 AccelData accelData;    // Sensor data
@@ -489,11 +495,40 @@ bool readSample() {
   return 0;
 }
 
+// Function to send encrypted telemetry via LoRa
+bool SendDataToGroundStation_LoRa(uint8_t* data, size_t len) {
+  // txtimeout: 5000ms, txPower: 14dBm, wait: 1 (blocking)
+  uint8_t result = LT.transmit(data, len, 1000, TX_POWER, WAIT_TX);
+  if(result == 0) {
+    Serial.println("LoRa transmission failed!");
+    Serial.print("Error Returned: ");
+    Serial.println(result);
+    return false;
+  }
+  Serial.println("LoRa transmission successful!");
+  return true;
+}
+
+void sendTelemetryMavlink() {
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  uint16_t len;
+
+  // 1. Send Attitude (Roll, Yaw, Pitch)
+  mavlink_msg_attitude_pack(
+    1, 200, &msg, millis(),
+    roll, pitch, yaw, 
+    gyroX, gyroY, gyroZ
+  );
+  
+}
+
 void setup() {
   Serial.begin(115200);
-  Serial2.begin(9600, SERIAL_8N1, HC12_RX, HC12_TX);
-  Serial.println("Serial2 Initialized!");
+  //Serial2.begin(9600, SERIAL_8N1, HC12_RX, HC12_TX);
+  //Serial.println("Serial2 Initialized!");
   Wire.begin();
+  SPI.begin();
 
   delay(1000);
   Serial.println("Initializing MPU6500...");
@@ -569,12 +604,15 @@ void setup() {
 
   delay(100);
   
+  Serial.println("Initialising LoRa.");
+  delay(1000);
   /* SET LORA CONFIGURATION */
-  if (!LT.begin(NSS, NRESET, DIO0, LORA_DEVICE)) {
-    Serial.println("SX1278 failed to initialise.");
-    while(1);
-  } else {
+  if(LT.begin(NSS, NRESET, DIO0, DEVICE_SX1278)) {
     Serial.println("SX1278 initialised.");
+    delay(100);
+  } else {
+    Serial.println("SX1278 failed to initialised.");
+    while(1);
   }
 
   // Frequency: 433MHz,  Bandwidth: 250kHz, Spreading Factor: 7 
@@ -582,27 +620,28 @@ void setup() {
   LT.setPacketType(PACKET_TYPE_LORA); // Set LoRa packet type
   LT.setRfFrequency(FREQUENCY, OFFSET); // Set frequency and offset
   LT.calibrateImage(0); // Calibrate image for frequency
-  LT.setModulationParams(BANDWIDTH, SPREADING_FACTOR, CODING_RATE, HEADERMODE); // Set modulation parameters
+  LT.setModulationParams(SPREADING_FACTOR, BANDWIDTH, CODING_RATE, LDRO_AUTO); // Set modulation parameters
   LT.setBufferBaseAddress(0x00, 0x00); // Set buffer base address for TX and RX
   LT.setPacketParams(8, LORA_PACKET_VARIABLE_LENGTH, 255, LORA_CRC_ON, LORA_IQ_NORMAL);
-  LT.setSyncWord(LORA_MAC_PRIVATE_SYNCWORD); // Set sync word for private LoRa network
+  LT.setSyncWord(LORA_SYNCWORD); // Set sync word for private LoRa network
   LT.setHighSensitivity(); // Enable high sensitivity mode
   LT.setDioIrqParams(IRQ_RADIO_ALL, IRQ_TX_DONE, 0, 0);
-  LT.setupLoRa(FREQUENCY, OFFSET, BANDWIDTH, SPREADING_FACTOR, CODING_RATE, HEADERMODE);
-  LT.setTxParams(TX_POWER, RAMP_TIME); // 20dBm power, 40µs ramp time
-  
-}
 
-// Function to send encrypted telemetry via LoRa
-bool SendDataToGroundStation_LoRa(uint8_t* data, size_t len) {
-  // txtimeout: 5000ms, txPower: 14dBm, wait: 1 (blocking)
-  uint8_t result = LT.transmit(data, len, 5000, TX_POWER, 1);
-  if(result == 0) {
-    Serial.println("LoRa transmission failed!");
-    return false;
-  }
-  Serial.println("LoRa transmission successful!");
-  return true;
+  /* PRINT LoRa Parameters */
+  Serial.println();
+  LT.printModemSettings();                               //reads and prints the configured LoRa settings, useful check
+  Serial.println();
+  LT.printOperatingSettings();                           //reads and prints the configured operating settings, useful check
+  Serial.println();
+  Serial.println();
+  LT.printRegisters(0x00, 0x4F);                         //print contents of device registers, normally 0x00 to 0x4F
+  Serial.println();
+  Serial.println();
+
+  Serial.print(F("Transmitter ready"));
+  Serial.println();
+
+  delay(1000);
 }
 
 void loop() {
