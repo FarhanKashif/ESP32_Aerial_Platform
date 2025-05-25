@@ -6,13 +6,29 @@
 #include <cstdlib>
 #include <mbedtls/aes.h>
 #include <SX127XLT.h>
+#include <SX127XLT_Definitions.h>
+
+/* SX1278 CONFIG SELECTIONS */
+#define NSS     5
+#define NRESET  4
+#define DIO0    2
+
+#define FREQUENCY                 433000000
+#define OFFSET                    0
+#define BANDWIDTH                 LORA_BW_125 // 125kHz
+#define SPREADING_FACTOR          LORA_SF7
+#define CODING_RATE               LORA_CR_4_5  // 4/5
+#define HEADERMODE                0x00 // Explicit Header Modes
+#define PA_OUTPUT_PA_BOOST_PIN    5
+#define RAMP_TIME                 0x02
+#define TX_POWER                  20
 
 // Default Gyro LPF 0x00
 // Default Accel LPF 0x00
 
 // Current Gyro LPF 0x02
 // Current Accel LPF 0x04
- 
+
 /* SX1278 Instance */
 SX127XLT LT;
 
@@ -444,8 +460,8 @@ bool readSample() {
   uint8_t encryptedPacket[32];
   Encrypt(&packet, aes_key, encryptedPacket);
   
-  // Send data to ground station 
-  bool Sent = SendDataToGroundStation(encryptedPacket); 
+  // Send data to ground station
+  bool Sent = SendDataToGroundStation_LoRa(encryptedPacket, sizeof(encryptedPacket)); 
 
   if(Sent) {
     Serial.println("Data sent successfully!");
@@ -551,8 +567,42 @@ void setup() {
 
   srand(time(NULL)); // Seed for random number generation
 
-  delay(100); 
+  delay(100);
+  
+  /* SET LORA CONFIGURATION */
+  if (!LT.begin(NSS, NRESET, DIO0, LORA_DEVICE)) {
+    Serial.println("SX1278 failed to initialise.");
+    while(1);
+  } else {
+    Serial.println("SX1278 initialised.");
+  }
 
+  // Frequency: 433MHz,  Bandwidth: 250kHz, Spreading Factor: 7 
+  LT.setMode(MODE_STDBY_RC);
+  LT.setPacketType(PACKET_TYPE_LORA); // Set LoRa packet type
+  LT.setRfFrequency(FREQUENCY, OFFSET); // Set frequency and offset
+  LT.calibrateImage(0); // Calibrate image for frequency
+  LT.setModulationParams(BANDWIDTH, SPREADING_FACTOR, CODING_RATE, HEADERMODE); // Set modulation parameters
+  LT.setBufferBaseAddress(0x00, 0x00); // Set buffer base address for TX and RX
+  LT.setPacketParams(8, LORA_PACKET_VARIABLE_LENGTH, 255, LORA_CRC_ON, LORA_IQ_NORMAL);
+  LT.setSyncWord(LORA_MAC_PRIVATE_SYNCWORD); // Set sync word for private LoRa network
+  LT.setHighSensitivity(); // Enable high sensitivity mode
+  LT.setDioIrqParams(IRQ_RADIO_ALL, IRQ_TX_DONE, 0, 0);
+  LT.setupLoRa(FREQUENCY, OFFSET, BANDWIDTH, SPREADING_FACTOR, CODING_RATE, HEADERMODE);
+  LT.setTxParams(TX_POWER, RAMP_TIME); // 20dBm power, 40µs ramp time
+  
+}
+
+// Function to send encrypted telemetry via LoRa
+bool SendDataToGroundStation_LoRa(uint8_t* data, size_t len) {
+  // txtimeout: 5000ms, txPower: 14dBm, wait: 1 (blocking)
+  uint8_t result = LT.transmit(data, len, 5000, TX_POWER, 1);
+  if(result == 0) {
+    Serial.println("LoRa transmission failed!");
+    return false;
+  }
+  Serial.println("LoRa transmission successful!");
+  return true;
 }
 
 void loop() {
